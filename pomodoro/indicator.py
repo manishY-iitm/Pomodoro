@@ -1,15 +1,22 @@
-"""Top-panel dock indicator widget positioned immediately to the left of the system clock."""
+"""Top-panel dock and adjacent indicator widget positioned immediately beside the system clock."""
 import os
 import sys
 import threading
 import gi
 
-# Ensure X11 backend for reliable absolute DOCK window placement under Mutter/XWayland
+# Force X11 backend for reliable absolute window placement under Mutter/XWayland
 os.environ["GDK_BACKEND"] = "x11"
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gtk, Gdk, GLib, Pango
+
+try:
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+    from gi.repository import AyatanaAppIndicator3
+    HAS_APP_INDICATOR = True
+except (ValueError, ImportError):
+    HAS_APP_INDICATOR = False
 
 from pomodoro.ipc import IPCClient
 
@@ -20,22 +27,20 @@ class PanelIndicatorWindow(Gtk.Window):
         self.client = ipc_client
         self.toggle_popup_cb = toggle_popup_cb
 
-        # Window properties for top-panel dock integration
+        # Window properties
         self.set_title("PomodoroPanelIndicator")
         self.set_decorated(False)
         self.set_keep_above(True)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
-        self.set_type_hint(Gdk.WindowTypeHint.DOCK)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
         self.set_role("panel-indicator")
 
-        # Transparency
-        screen = self.get_screen()
-        visual = screen.get_rgba_visual()
-        if visual:
-            self.set_visual(visual)
+        # Visual styling
+        self._apply_css()
 
-        # Connect screen size change to reposition dynamically
+        # Connect screen size changes
+        screen = self.get_screen()
         screen.connect("size-changed", self._on_screen_changed)
 
         # UI elements
@@ -44,44 +49,49 @@ class PanelIndicatorWindow(Gtk.Window):
         self.button.connect("clicked", self._on_button_clicked)
         self.button.connect("button-press-event", self._on_button_press)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.set_border_width(2)
+
         self.icon_label = Gtk.Label(label="◷")
         self.text_label = Gtk.Label(label="FOCUS")
+        self.task_sub_label = Gtk.Label(label="")
+        self.task_sub_label.set_no_show_all(True)
 
         box.pack_start(self.icon_label, False, False, 0)
         box.pack_start(self.text_label, False, False, 0)
+        box.pack_start(self.task_sub_label, False, False, 0)
         self.button.add(box)
         self.add(self.button)
 
-        # Apply dark panel CSS matching GNOME Shell style
-        self._apply_css()
-
-        # Cache geometry and offset
         self.panel_x_offset = 0
-        self.indicator_width = 105
-        self.indicator_height = 26
-
+        self.indicator_width = 125
+        self.indicator_height = 28
         self.set_size_request(self.indicator_width, self.indicator_height)
 
-        # Fetch initial status
-        self._update_from_daemon()
+        # Initialize AppIndicator if available (native top-bar integration)
+        self.app_indicator = None
+        if HAS_APP_INDICATOR:
+            self._init_app_indicator()
 
-        # Position window immediately to the left of the central clock
+        # Fetch initial state and position
+        self._update_from_daemon()
         self.reposition()
 
     def _apply_css(self):
         css_provider = Gtk.CssProvider()
         css = b"""
         window {
-            background-color: transparent;
+            background-color: #1e222b;
+            border: 1px solid rgba(97, 175, 239, 0.5);
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
         }
         button {
-            background-color: rgba(20, 20, 20, 0.4);
-            color: #e6e6e6;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 999px;
-            padding: 1px 10px;
-            margin: 1px 0px;
+            background-color: #21252b;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            padding: 3px 10px;
             font-family: Cantarell, "Segoe UI", Sans;
             font-size: 11pt;
             font-weight: bold;
@@ -89,13 +99,11 @@ class PanelIndicatorWindow(Gtk.Window):
             transition: all 120ms ease-in-out;
         }
         button:hover {
-            background-color: rgba(255, 255, 255, 0.16);
-            color: #ffffff;
-            border-color: rgba(255, 255, 255, 0.2);
+            background-color: #282c34;
+            color: #61afef;
         }
         button:active {
-            background-color: rgba(255, 255, 255, 0.25);
-            color: #ffffff;
+            background-color: #3e4452;
         }
         .state-focus {
             color: #e06c75;
@@ -114,6 +122,51 @@ class PanelIndicatorWindow(Gtk.Window):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
 
+    def _init_app_indicator(self):
+        try:
+            self.app_indicator = AyatanaAppIndicator3.Indicator.new(
+                "kali-pomodoro-timer",
+                "pomodoro",
+                AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS,
+            )
+            self.app_indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
+            self.app_indicator.set_label("◷ FOCUS", "25:00")
+
+            menu = Gtk.Menu()
+
+            self.menu_item_status = Gtk.MenuItem(label="Pomodoro: IDLE (25:00)")
+            menu.append(self.menu_item_status)
+            menu.append(Gtk.SeparatorMenuItem())
+
+            self.menu_item_toggle = Gtk.MenuItem(label="▶ Start Timer")
+            self.menu_item_toggle.connect("activate", lambda w: self._send_cmd("toggle"))
+            menu.append(self.menu_item_toggle)
+
+            item_reset = Gtk.MenuItem(label="⟲ Reset Interval")
+            item_reset.connect("activate", lambda w: self._send_cmd("reset"))
+            menu.append(item_reset)
+
+            item_skip = Gtk.MenuItem(label="⏭ Skip Session")
+            item_skip.connect("activate", lambda w: self._send_cmd("skip"))
+            menu.append(item_skip)
+
+            menu.append(Gtk.SeparatorMenuItem())
+
+            item_open = Gtk.MenuItem(label="📋 Open Controls & Tasks...")
+            item_open.connect("activate", lambda w: self._on_button_clicked(None))
+            menu.append(item_open)
+
+            menu.show_all()
+            self.app_indicator.set_menu(menu)
+        except Exception as e:
+            self.app_indicator = None
+
+    def _send_cmd(self, cmd: str):
+        try:
+            self.client.send_command(cmd)
+        except Exception:
+            pass
+
     def reposition(self):
         """Calculates exact coordinates to place indicator immediately to the LEFT of the system clock."""
         display = Gdk.Display.get_default()
@@ -127,19 +180,18 @@ class PanelIndicatorWindow(Gtk.Window):
         work = monitor.get_workarea()
 
         screen_width = geom.width
-        top_bar_height = max(24, work.y) if work.y > 0 else 29
+        top_bar_height = max(28, work.y) if work.y > 0 else 29
 
-        # In GNOME Shell, dateMenu is centered at screen_width / 2.
-        # Estimated width of 'Mon Oct 12 11:08:05' with padding is ~168px.
+        # System clock in GNOME Shell is centered at screen_width // 2.
         center_x = screen_width // 2
         clock_width = 168
         clock_left = center_x - (clock_width // 2)
 
-        # Place indicator immediately to the left of clock_left with 8px margin
+        # Place indicator immediately to the left of clock_left
         spacing = 8
         target_x = int(clock_left - self.indicator_width - spacing + self.panel_x_offset)
-        # Center vertically in the top bar
-        target_y = max(0, int((top_bar_height - self.indicator_height) / 2))
+        # Position immediately touching the bottom of the top panel (or 2px into client area)
+        target_y = int(top_bar_height) + 1
 
         self.move(target_x, target_y)
 
@@ -151,12 +203,9 @@ class PanelIndicatorWindow(Gtk.Window):
             self.toggle_popup_cb()
 
     def _on_button_press(self, widget, event):
-        # Right-click toggles timer start/pause directly
+        # Right-click toggles start/pause directly
         if event.button == 3:
-            try:
-                self.client.send_command("toggle")
-            except Exception:
-                pass
+            self._send_cmd("toggle")
             return True
         return False
 
@@ -164,11 +213,11 @@ class PanelIndicatorWindow(Gtk.Window):
         state = status.get("state", "IDLE")
         panel_label = status.get("panel_label", "FOCUS")
         panel_icon = status.get("panel_icon", "◷")
+        formatted = status.get("formatted_time", "25:00")
 
         self.icon_label.set_text(panel_icon)
         self.text_label.set_text(panel_label)
 
-        # Update styling class
         context = self.button.get_style_context()
         for cls in ["state-focus", "state-break", "state-paused"]:
             context.remove_class(cls)
@@ -180,13 +229,26 @@ class PanelIndicatorWindow(Gtk.Window):
         elif state == "PAUSED":
             context.add_class("state-paused")
 
-        # Update tooltip
         task = status.get("active_task")
         task_str = f"Task: {task['name']}" if task else "No task active"
         tooltip = f"Pomodoro: {state} ({panel_label})\n{task_str}\nLeft-click: Open Menu\nRight-click: Toggle Start/Pause"
         self.button.set_tooltip_text(tooltip)
 
-        # Check if panel offset changed in settings
+        # Update AppIndicator if active
+        if self.app_indicator:
+            try:
+                self.app_indicator.set_label(f" {panel_icon} {panel_label}", " 25:00")
+                self.menu_item_status.get_child().set_text(f"Pomodoro: {state} ({formatted})")
+                if state in ("FOCUS", "SHORT_BREAK", "LONG_BREAK"):
+                    self.menu_item_toggle.get_child().set_text("⏸ Pause Timer")
+                elif state == "PAUSED":
+                    self.menu_item_toggle.get_child().set_text("▶ Resume Timer")
+                else:
+                    self.menu_item_toggle.get_child().set_text("▶ Start Timer")
+            except Exception:
+                pass
+
+        # Check settings offset
         settings = status.get("settings", {})
         new_offset = settings.get("panel_x_offset", 0)
         if new_offset != self.panel_x_offset:

@@ -87,6 +87,10 @@ def main():
     # Re-apply position after window is realized
     GLib.timeout_add(100, lambda: (indicator.reposition(), False)[1])
 
+    # Show companion popup on initial launch so user sees the full UI immediately
+    popup.show_all()
+    popup.present()
+
     Gtk.main()
 
 
