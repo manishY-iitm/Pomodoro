@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Top-panel dock indicator process with interactive companion popup."""
+"""Top-panel indicator process (AppIndicator beside system clock)."""
 import os
 import sys
 import time
@@ -9,16 +9,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Force X11 backend for accurate Mutter dock window positioning
-os.environ["GDK_BACKEND"] = "x11"
 import gi
 gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gtk, Gdk, GLib
+gi.require_version("AyatanaAppIndicator3", "0.1")
+from gi.repository import Gtk, GLib
 
 from pomodoro.ipc import IPCClient
-from pomodoro.indicator import PanelIndicatorWindow
-from pomodoro.ui import PomodoroCompanionPopup
+from pomodoro.indicator import PanelAppIndicator
 
 
 def ensure_daemon_running(client: IPCClient):
@@ -35,61 +32,22 @@ def main():
     client = IPCClient()
     ensure_daemon_running(client)
 
-    popup = None
-    indicator = None
+    app_indicator = PanelAppIndicator(ipc_client=client)
 
-    def toggle_popup():
-        nonlocal popup, indicator
-        if popup.get_visible():
-            popup.hide()
-        else:
-            popup.refresh_all()
-            # Position popup under indicator if possible
-            if indicator:
-                ix, iy = indicator.get_position()
-                iw, ih = indicator.get_size()
-                pw, ph = popup.get_size()
-                target_x = max(10, ix + (iw // 2) - (pw // 2))
-                target_y = iy + ih + 4
-                popup.move(target_x, target_y)
-            popup.show_all()
-            popup.present()
-
-    def on_settings_changed(updates):
-        nonlocal indicator
-        if indicator and "panel_x_offset" in updates:
-            indicator.panel_x_offset = updates["panel_x_offset"]
-            indicator.reposition()
-
-    indicator = PanelIndicatorWindow(ipc_client=client, toggle_popup_cb=toggle_popup)
-    popup = PomodoroCompanionPopup(ipc_client=client, on_settings_changed_cb=on_settings_changed)
-
-    # Subscribe to daemon push updates in background thread
+    # Subscribe to daemon push events
     def on_ipc_event(msg):
         event = msg.get("event")
         data = msg.get("data")
         if event in ("tick", "state_change") and data:
-            GLib.idle_add(indicator.update_status, data)
-            GLib.idle_add(popup.update_status, data)
+            GLib.idle_add(app_indicator.update_status, data)
         elif event == "tasks_changed":
-            GLib.idle_add(popup.refresh_tasks)
+            if app_indicator.popup.get_visible():
+                GLib.idle_add(app_indicator.popup.refresh_tasks)
         elif event == "settings_changed":
-            GLib.idle_add(popup.refresh_settings)
-            if indicator and "settings" in msg:
-                s = msg["settings"]
-                if "panel_x_offset" in s:
-                    indicator.panel_x_offset = s["panel_x_offset"]
-                    GLib.idle_add(indicator.reposition)
+            if app_indicator.popup.get_visible():
+                GLib.idle_add(app_indicator.popup.refresh_settings)
 
     client.subscribe(on_ipc_event)
-
-    indicator.show_all()
-    # Re-apply position after window is realized
-    GLib.timeout_add(100, lambda: (indicator.reposition(), False)[1])
-
-    # Show companion popup on initial launch so user sees the full UI immediately
-    popup.show_all()
-    popup.present()
 
     Gtk.main()
 
