@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Background Pomodoro timer daemon and IPC server."""
+import os
+import sys
+import time
+import signal
+import argparse
+from pathlib import Path
+
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from pomodoro.config import PID_FILE, SOCKET_PATH
+from pomodoro.db import Database
+from pomodoro.notify import Notifier
+from pomodoro.engine import TimerEngine
+from pomodoro.ipc import IPCServer
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Kali Pomodoro Timer Daemon")
+    parser.add_argument("--stop", action="store_true", help="Stop running daemon")
+    parser.add_argument("--restart", action="store_true", help="Restart running daemon")
+    parser.add_argument("--status", action="store_true", help="Check daemon running status")
+    args = parser.parse_args()
+
+    # Check existing PID
+    running_pid = None
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            # Check if process is alive
+            os.kill(pid, 0)
+            running_pid = pid
+        except (ValueError, OSError):
+            PID_FILE.unlink(missing_ok=True)
+
+    if args.status:
+        if running_pid:
+            print(f"Pomodoro daemon is running (PID {running_pid})")
+            sys.exit(0)
+        else:
+            print("Pomodoro daemon is stopped")
+            sys.exit(1)
+
+    if args.stop or args.restart:
+        if running_pid:
+            print(f"Stopping Pomodoro daemon (PID {running_pid})...")
+            try:
+                os.kill(running_pid, signal.SIGTERM)
+                for _ in range(30):
+                    time.sleep(0.1)
+                    try:
+                        os.kill(running_pid, 0)
+                    except OSError:
+                        break
+            except Exception as e:
+                print(f"Error stopping daemon: {e}", file=sys.stderr)
+            PID_FILE.unlink(missing_ok=True)
+            SOCKET_PATH.unlink(missing_ok=True)
+        else:
+            print("Pomodoro daemon is not running")
+
+        if args.stop:
+            sys.exit(0)
+
+    # Initialize components
+    db = Database()
+    notifier = Notifier()
+    engine = TimerEngine(db=db, notifier=notifier)
+    server = IPCServer(engine=engine)
+
+    try:
+        server.start()
+    except Exception as e:
+        print(f"Failed to start IPC server: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Write PID
+    PID_FILE.write_text(str(os.getpid()))
+
+    def handle_exit(signum, frame):
+        server.stop()
+        PID_FILE.unlink(missing_ok=True)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
+    # Main event loop: ticks every second and processes client socket connections
+    last_tick = time.monotonic()
+
+    try:
+        while server.running:
+            server.process_connections(timeout=0.05)
+            now = time.monotonic()
+            if now - last_tick >= 1.0:
+                engine.tick()
+                last_tick = now
+    finally:
+        server.stop()
+        PID_FILE.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

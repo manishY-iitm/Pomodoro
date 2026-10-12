@@ -1,0 +1,5 @@
+/* Styling for native GNOME Shell Pomodoro Indicator */
+.pomodoro-panel-box {
+    spacing: 4px;
+    padding: 0 4px;
+}

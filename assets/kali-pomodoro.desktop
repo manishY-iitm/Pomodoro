@@ -1,0 +1,26 @@
+[Desktop Entry]
+Name=Pomodoro Clock
+Comment=Pomodoro Productivity Timer for Kali Linux
+Exec=/home/kali/pomodoro-productivity-clock/bin/pomodoro-app
+Icon=alarm
+Terminal=false
+Type=Application
+Categories=Utility;Clock;Productivity;
+StartupNotify=true
+Actions=Start;Pause;Reset;Stats;
+
+[Desktop Action Start]
+Name=Start Timer
+Exec=/home/kali/pomodoro-productivity-clock/bin/pomodoroctl start
+
+[Desktop Action Pause]
+Name=Pause Timer
+Exec=/home/kali/pomodoro-productivity-clock/bin/pomodoroctl pause
+
+[Desktop Action Reset]
+Name=Reset Timer
+Exec=/home/kali/pomodoro-productivity-clock/bin/pomodoroctl reset
+
+[Desktop Action Stats]
+Name=View Statistics
+Exec=/home/kali/pomodoro-productivity-clock/bin/pomodoroctl stats

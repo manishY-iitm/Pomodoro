@@ -1,0 +1,15 @@
+{
+  "name": "Kali Pomodoro Clock",
+  "description": "Native Pomodoro Productivity Timer placed immediately to the left of the central date and time clock.",
+  "uuid": "pomodoro@antigravity.org",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50"
+  ],
+  "url": "https://gitlab.com/kalilinux/pomodoro-productivity-clock",
+  "version": 1
+}

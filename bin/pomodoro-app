@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Main application launcher for Kali Pomodoro Clock."""
+import os
+import sys
+import time
+import signal
+import argparse
+import subprocess
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from pomodoro.config import PID_FILE, SOCKET_PATH
+from pomodoro.ipc import IPCClient
+
+DAEMON_BIN = PROJECT_ROOT / "bin" / "pomodoro-daemon"
+INDICATOR_BIN = PROJECT_ROOT / "bin" / "pomodoro-indicator"
+CTL_BIN = PROJECT_ROOT / "bin" / "pomodoroctl"
+
+
+def is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def start_daemon_if_needed():
+    client = IPCClient()
+    if not client.is_server_running():
+        subprocess.Popen(
+            [sys.executable, str(DAEMON_BIN)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        for _ in range(40):
+            time.sleep(0.05)
+            if client.is_server_running():
+                break
+
+
+def stop_all():
+    # Stop daemon
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        PID_FILE.unlink(missing_ok=True)
+    SOCKET_PATH.unlink(missing_ok=True)
+
+    # Stop any running indicator instances
+    try:
+        subprocess.run(["pkill", "-f", "pomodoro-indicator"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    print("Kali Pomodoro Clock stopped.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Kali Pomodoro Productivity Clock")
+    parser.add_argument("--stop", action="store_true", help="Stop Pomodoro clock and daemon")
+    parser.add_argument("--restart", action="store_true", help="Restart Pomodoro clock")
+    parser.add_argument("--status", action="store_true", help="Check status")
+    parser.add_argument("--menu", action="store_true", help="Open controls popup")
+    parser.add_argument("--daemon-only", action="store_true", help="Start only the background timer daemon")
+    args = parser.parse_args()
+
+    if args.stop:
+        stop_all()
+        return
+
+    if args.restart:
+        stop_all()
+        time.sleep(0.5)
+
+    if args.status:
+        subprocess.run([sys.executable, str(CTL_BIN), "status"])
+        return
+
+    # Start background daemon
+    start_daemon_if_needed()
+
+    if args.daemon_only:
+        print("Pomodoro daemon is running.")
+        return
+
+    # Check if indicator is already running (use [p] trick to avoid matching pgrep itself)
+    pids = subprocess.getoutput("pgrep -f '[p]omodoro-indicator'").strip().split()
+    current_pid = str(os.getpid())
+    existing_pids = [p for p in pids if p != current_pid and p.isdigit()]
+
+    if existing_pids and not args.restart:
+        print("Pomodoro top-panel indicator is already running.")
+        sys.exit(0)
+
+    # Launch top-panel indicator
+    os.execv(sys.executable, [sys.executable, str(INDICATOR_BIN)])
+
+
+if __name__ == "__main__":
+    main()
