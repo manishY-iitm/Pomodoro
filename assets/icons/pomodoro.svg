@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <radialGradient id="tomatoGrad" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#ff6b6b"/>
+      <stop offset="65%" stop-color="#ee3a3a"/>
+      <stop offset="100%" stop-color="#b71515"/>
+    </radialGradient>
+    <linearGradient id="leafGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#51cf66"/>
+      <stop offset="100%" stop-color="#2b8a3e"/>
+    </linearGradient>
+  </defs>
+  <!-- Tomato body -->
+  <path d="M32 14 C18 14 8 24 8 38 C8 51 19 60 32 60 C45 60 56 51 56 38 C56 24 46 14 32 14 Z" fill="url(#tomatoGrad)"/>
+  <ellipse cx="23" cy="27" rx="4" ry="7" fill="#ffffff" opacity="0.3" transform="rotate(-25 23 27)"/>
+  <!-- Calyx & Leaves -->
+  <path d="M32 16 C30 11 26 8 20 7 C24 11 27 14 29 16 Z" fill="url(#leafGrad)"/>
+  <path d="M32 16 C34 11 38 8 44 7 C40 11 37 14 35 16 Z" fill="url(#leafGrad)"/>
+  <path d="M32 16 C32 10 32 6 34 3 C32 6 31 10 32 16 Z" stroke="#2b8a3e" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <circle cx="32" cy="16" r="2.5" fill="#2b8a3e"/>
+  <!-- Clock hands silhouette inside -->
+  <circle cx="32" cy="40" r="11" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.85"/>
+  <polyline points="32 33 32 40 37 40" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+</svg>

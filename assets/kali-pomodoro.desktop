@@ -2,10 +2,10 @@
 Name=Pomodoro Clock
 Comment=Pomodoro Productivity Timer for Kali Linux
 Exec=/home/kali/pomodoro-productivity-clock/bin/pomodoro-app
-Icon=alarm
+Icon=pomodoro
 Terminal=false
 Type=Application
-Categories=Utility;Clock;Productivity;
+Categories=Utility;Clock;X-Productivity;
 StartupNotify=true
 Actions=Start;Pause;Reset;Stats;
 

@@ -12,7 +12,13 @@ echo "=== Installing Kali Pomodoro Productivity Clock ==="
 chmod +x "$SCRIPT_DIR/bin/"*
 chmod +x "$SCRIPT_DIR/gnome-extension/install.sh" 2>/dev/null || true
 
-# 2. Install desktop shortcut
+# 2. Install icon
+ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+mkdir -p "$ICON_DIR"
+cp "$SCRIPT_DIR/assets/icons/pomodoro.svg" "$ICON_DIR/"
+gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
+# 3. Install desktop shortcut
 mkdir -p "$APPS_DIR"
 cp "$SCRIPT_DIR/assets/kali-pomodoro.desktop" "$APPS_DIR/"
 sed -i "s|/home/kali/pomodoro-productivity-clock|$SCRIPT_DIR|g" "$APPS_DIR/kali-pomodoro.desktop"
