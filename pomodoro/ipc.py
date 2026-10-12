@@ -1,21 +1,31 @@
-"""Unix Domain Socket IPC layer for communication between daemon and interfaces."""
+"""Cross-platform IPC layer supporting Unix Domain Sockets and Localhost TCP Sockets.
+Enables reliable communication across Linux, macOS, and Windows.
+"""
 import os
+import sys
 import json
 import socket
 import select
 import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
-from pomodoro.config import SOCKET_PATH
+
+from pomodoro.config import SOCKET_PATH, PORT_FILE, DEFAULT_TCP_PORT, IS_WINDOWS
 
 
 class IPCServer:
-    def __init__(self, engine, socket_path: Optional[Path] = None):
+    def __init__(self, engine, socket_path: Optional[Path] = None, tcp_port: Optional[int] = None):
         self.engine = engine
         self.db = engine.db
         self.socket_path = socket_path or SOCKET_PATH
+        self.requested_tcp_port = tcp_port
+        self.tcp_port: Optional[int] = None
+
         self.running = False
-        self.server_socket: Optional[socket.socket] = None
+        self.listen_sockets: List[socket.socket] = []
+        self.unix_server_sock: Optional[socket.socket] = None
+        self.tcp_server_sock: Optional[socket.socket] = None
+
         self.clients: List[socket.socket] = []
         self.subscribers: List[socket.socket] = []
         self.lock = threading.Lock()
@@ -25,24 +35,59 @@ class IPCServer:
         self.engine.on_tick = self._on_tick
 
     def start(self):
-        """Initializes socket and starts accepting connections."""
-        if self.socket_path.exists():
-            try:
-                # Test if existing socket is active
-                test_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                test_sock.connect(str(self.socket_path))
-                test_sock.close()
-                raise RuntimeError(f"Another instance is already running on {self.socket_path}")
-            except (ConnectionRefusedError, FileNotFoundError):
-                self.socket_path.unlink(missing_ok=True)
+        """Initializes sockets (Unix socket on POSIX, TCP localhost on all platforms)."""
+        self.listen_sockets.clear()
 
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-        self.server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server_socket.bind(str(self.socket_path))
-        # Ensure only current user can access the socket
-        os.chmod(self.socket_path, 0o600)
-        self.server_socket.listen(10)
-        self.server_socket.setblocking(False)
+        # 1. Start Unix Domain Socket (if on Unix / POSIX)
+        if not IS_WINDOWS and hasattr(socket, "AF_UNIX"):
+            if self.socket_path.exists():
+                try:
+                    test_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    test_sock.connect(str(self.socket_path))
+                    test_sock.close()
+                    raise RuntimeError(f"Another instance is already running on {self.socket_path}")
+                except (ConnectionRefusedError, FileNotFoundError):
+                    self.socket_path.unlink(missing_ok=True)
+
+            self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+            self.unix_server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.unix_server_sock.bind(str(self.socket_path))
+            try:
+                os.chmod(self.socket_path, 0o600)
+            except Exception:
+                pass
+            self.unix_server_sock.listen(10)
+            self.unix_server_sock.setblocking(False)
+            self.listen_sockets.append(self.unix_server_sock)
+
+        # 2. Start TCP Localhost Socket (for Windows and cross-platform clients)
+        self.tcp_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        ports_to_try = [self.requested_tcp_port] if self.requested_tcp_port else [DEFAULT_TCP_PORT, 0]
+        bound = False
+        for p in ports_to_try:
+            try:
+                self.tcp_server_sock.bind(("127.0.0.1", p))
+                bound = True
+                break
+            except OSError:
+                continue
+
+        if bound:
+            self.tcp_server_sock.listen(10)
+            self.tcp_server_sock.setblocking(False)
+            self.tcp_port = self.tcp_server_sock.getsockname()[1]
+            try:
+                PORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                PORT_FILE.write_text(str(self.tcp_port))
+            except Exception:
+                pass
+            self.listen_sockets.append(self.tcp_server_sock)
+
+        if not self.listen_sockets:
+            raise RuntimeError("Failed to bind any IPC listening sockets (Unix or TCP).")
+
         self.running = True
 
     def stop(self):
@@ -56,23 +101,34 @@ class IPCServer:
             self.clients.clear()
             self.subscribers.clear()
 
-        if self.server_socket:
+        for s in self.listen_sockets:
             try:
-                self.server_socket.close()
+                s.close()
             except Exception:
                 pass
-            self.server_socket = None
+        self.listen_sockets.clear()
+        self.unix_server_sock = None
+        self.tcp_server_sock = None
 
-        if self.socket_path.exists():
-            self.socket_path.unlink(missing_ok=True)
+        if self.socket_path and self.socket_path.exists():
+            try:
+                self.socket_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if PORT_FILE.exists():
+            try:
+                PORT_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def process_connections(self, timeout: float = 0.05):
         """Polls for new connections and incoming client commands."""
-        if not self.server_socket or not self.running:
+        if not self.running or not self.listen_sockets:
             return
 
         with self.lock:
-            read_list = [self.server_socket] + list(self.clients)
+            read_list = list(self.listen_sockets) + list(self.clients)
 
         try:
             readable, _, errored = select.select(read_list, [], read_list, timeout)
@@ -83,9 +139,9 @@ class IPCServer:
             self._disconnect(s)
 
         for s in readable:
-            if s is self.server_socket:
+            if s in self.listen_sockets:
                 try:
-                    client_sock, _ = self.server_socket.accept()
+                    client_sock, _ = s.accept()
                     client_sock.setblocking(False)
                     with self.lock:
                         self.clients.append(client_sock)
@@ -98,7 +154,7 @@ class IPCServer:
                         self._disconnect(s)
                         continue
                     self._handle_client_data(s, data.decode("utf-8"))
-                except (ConnectionResetError, BrokenPipeError):
+                except (ConnectionResetError, BrokenPipeError, OSError):
                     self._disconnect(s)
                 except Exception:
                     pass
@@ -284,18 +340,47 @@ class IPCServer:
 
 
 class IPCClient:
-    def __init__(self, socket_path: Optional[Path] = None):
+    def __init__(self, socket_path: Optional[Path] = None, tcp_port: Optional[int] = None):
         self.socket_path = socket_path or SOCKET_PATH
+        self.tcp_port = tcp_port
         self.sub_thread: Optional[threading.Thread] = None
         self.sub_running = False
 
-    def is_server_running(self) -> bool:
-        if not self.socket_path.exists():
-            return False
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(0.5)
+    def _get_tcp_port(self) -> int:
+        if self.tcp_port:
+            return self.tcp_port
+        if PORT_FILE.exists():
+            try:
+                return int(PORT_FILE.read_text().strip())
+            except Exception:
+                pass
+        return DEFAULT_TCP_PORT
+
+    def _connect(self, timeout: float = 2.0) -> socket.socket:
+        """Connects via Unix socket (if on POSIX) or TCP localhost."""
+        # 1. Try Unix domain socket first on POSIX platforms
+        if not IS_WINDOWS and hasattr(socket, "AF_UNIX") and self.socket_path and self.socket_path.exists():
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(timeout)
                 s.connect(str(self.socket_path))
+                return s
+            except Exception:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+        # 2. Try TCP Localhost
+        port = self._get_tcp_port()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(("127.0.0.1", port))
+        return s
+
+    def is_server_running(self) -> bool:
+        try:
+            with self._connect(timeout=0.5) as s:
                 s.sendall(b'{"cmd": "status"}\n')
                 data = s.recv(1024)
                 return bool(data)
@@ -307,9 +392,7 @@ class IPCClient:
         payload = {"cmd": cmd, **kwargs}
         line = json.dumps(payload) + "\n"
 
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(str(self.socket_path))
+        with self._connect(timeout=timeout) as s:
             s.sendall(line.encode("utf-8"))
 
             buffer = ""
@@ -326,8 +409,8 @@ class IPCClient:
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> socket.socket:
         """Connects to socket and spawns background listener for pushed events."""
-        sub_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sub_sock.connect(str(self.socket_path))
+        sub_sock = self._connect(timeout=3.0)
+        sub_sock.settimeout(None)
         sub_sock.sendall(b'{"cmd": "subscribe"}\n')
 
         def listener():

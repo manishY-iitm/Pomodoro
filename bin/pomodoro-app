@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Main application launcher for Kali Pomodoro Clock."""
+"""Main application launcher for Pomodoro Productivity Clock.
+Fully cross-platform for Windows, macOS, and Linux.
+"""
 import os
 import sys
 import time
@@ -11,7 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pomodoro.config import PID_FILE, SOCKET_PATH
+from pomodoro.config import PID_FILE, INDICATOR_PID_FILE, SOCKET_PATH, PORT_FILE, IS_WINDOWS
 from pomodoro.ipc import IPCClient
 
 DAEMON_BIN = PROJECT_ROOT / "bin" / "pomodoro-daemon"
@@ -30,12 +32,16 @@ def is_running(pid: int) -> bool:
 def start_daemon_if_needed():
     client = IPCClient()
     if not client.is_server_running():
-        subprocess.Popen(
-            [sys.executable, str(DAEMON_BIN)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        if IS_WINDOWS:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen([sys.executable, str(DAEMON_BIN)], creationflags=creationflags)
+        else:
+            subprocess.Popen(
+                [sys.executable, str(DAEMON_BIN)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         for _ in range(40):
             time.sleep(0.05)
             if client.is_server_running():
@@ -43,7 +49,7 @@ def start_daemon_if_needed():
 
 
 def stop_all():
-    # Stop daemon
+    # 1. Stop daemon
     if PID_FILE.exists():
         try:
             pid = int(PID_FILE.read_text().strip())
@@ -51,24 +57,37 @@ def stop_all():
         except Exception:
             pass
         PID_FILE.unlink(missing_ok=True)
-    SOCKET_PATH.unlink(missing_ok=True)
 
-    # Stop any running indicator instances
-    try:
-        subprocess.run(["pkill", "-f", "pomodoro-indicator"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-    print("Kali Pomodoro Clock stopped.")
+    # 2. Stop indicator
+    if INDICATOR_PID_FILE.exists():
+        try:
+            pid = int(INDICATOR_PID_FILE.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+        INDICATOR_PID_FILE.unlink(missing_ok=True)
+
+    # Fallback process killing on POSIX
+    if not IS_WINDOWS:
+        try:
+            subprocess.run(["pkill", "-f", "pomodoro-indicator"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    SOCKET_PATH.unlink(missing_ok=True)
+    PORT_FILE.unlink(missing_ok=True)
+    print("Pomodoro Clock stopped.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kali Pomodoro Productivity Clock")
+    parser = argparse.ArgumentParser(description="Pomodoro Productivity Clock")
     parser.add_argument("--stop", action="store_true", help="Stop Pomodoro clock and daemon")
     parser.add_argument("--restart", action="store_true", help="Restart Pomodoro clock")
     parser.add_argument("--status", action="store_true", help="Check status")
     parser.add_argument("--menu", action="store_true", help="Open controls popup")
     parser.add_argument("--daemon-only", action="store_true", help="Start only the background timer daemon")
-    args = parser.parse_args()
+    parser.add_argument("--qt", action="store_true", help="Force PyQt GUI on any platform")
+    args, unknown = parser.parse_known_args()
 
     if args.stop:
         stop_all()
@@ -89,17 +108,23 @@ def main():
         print("Pomodoro daemon is running.")
         return
 
-    # Check if indicator is already running (use [p] trick to avoid matching pgrep itself)
-    pids = subprocess.getoutput("pgrep -f '[p]omodoro-indicator'").strip().split()
-    current_pid = str(os.getpid())
-    existing_pids = [p for p in pids if p != current_pid and p.isdigit()]
+    # Check if indicator is already running
+    if INDICATOR_PID_FILE.exists():
+        try:
+            ind_pid = int(INDICATOR_PID_FILE.read_text().strip())
+            if is_running(ind_pid) and ind_pid != os.getpid():
+                if not args.restart:
+                    print(f"Pomodoro indicator is already running (PID {ind_pid}).")
+                    sys.exit(0)
+        except Exception:
+            INDICATOR_PID_FILE.unlink(missing_ok=True)
 
-    if existing_pids and not args.restart:
-        print("Pomodoro top-panel indicator is already running.")
-        sys.exit(0)
-
-    # Launch top-panel indicator
-    os.execv(sys.executable, [sys.executable, str(INDICATOR_BIN)])
+    # Launch indicator
+    extra_flags = ["--qt"] if args.qt else []
+    if IS_WINDOWS:
+        subprocess.call([sys.executable, str(INDICATOR_BIN)] + extra_flags)
+    else:
+        os.execv(sys.executable, [sys.executable, str(INDICATOR_BIN)] + extra_flags)
 
 
 if __name__ == "__main__":

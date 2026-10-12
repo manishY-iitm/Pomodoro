@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Background Pomodoro timer daemon and IPC server."""
+"""Background Pomodoro timer daemon and IPC server.
+Fully cross-platform for Windows, macOS, and Linux.
+"""
 import os
 import sys
 import time
@@ -11,7 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pomodoro.config import PID_FILE, SOCKET_PATH
+from pomodoro.config import PID_FILE, SOCKET_PATH, PORT_FILE
 from pomodoro.db import Database
 from pomodoro.notify import Notifier
 from pomodoro.engine import TimerEngine
@@ -19,7 +21,7 @@ from pomodoro.ipc import IPCServer
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kali Pomodoro Timer Daemon")
+    parser = argparse.ArgumentParser(description="Pomodoro Timer Daemon")
     parser.add_argument("--stop", action="store_true", help="Stop running daemon")
     parser.add_argument("--restart", action="store_true", help="Restart running daemon")
     parser.add_argument("--status", action="store_true", help="Check daemon running status")
@@ -59,6 +61,7 @@ def main():
                 print(f"Error stopping daemon: {e}", file=sys.stderr)
             PID_FILE.unlink(missing_ok=True)
             SOCKET_PATH.unlink(missing_ok=True)
+            PORT_FILE.unlink(missing_ok=True)
         else:
             print("Pomodoro daemon is not running")
 
@@ -78,15 +81,21 @@ def main():
         sys.exit(1)
 
     # Write PID
-    PID_FILE.write_text(str(os.getpid()))
+    try:
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
     def handle_exit(signum, frame):
         server.stop()
         PID_FILE.unlink(missing_ok=True)
+        PORT_FILE.unlink(missing_ok=True)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, handle_exit)
-    signal.signal(signal.SIGTERM, handle_exit)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, handle_exit)
 
     # Main event loop: ticks every second and processes client socket connections
     last_tick = time.monotonic()
@@ -101,6 +110,7 @@ def main():
     finally:
         server.stop()
         PID_FILE.unlink(missing_ok=True)
+        PORT_FILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

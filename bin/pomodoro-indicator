@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Top-panel indicator process (AppIndicator beside system clock)."""
+"""Cross-platform indicator process.
+Runs GTK on Linux GNOME when available, and PyQt on Windows, macOS, and other desktop environments.
+"""
 import os
 import sys
 import time
@@ -9,32 +11,38 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import gi
-gi.require_version("Gtk", "3.0")
-gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import Gtk, GLib
-
+from pomodoro.config import IS_WINDOWS, IS_MACOS, IS_LINUX, INDICATOR_PID_FILE
 from pomodoro.ipc import IPCClient
-from pomodoro.indicator import PanelAppIndicator
 
 
 def ensure_daemon_running(client: IPCClient):
     if not client.is_server_running():
         daemon_bin = PROJECT_ROOT / "bin" / "pomodoro-daemon"
-        subprocess.Popen([sys.executable, str(daemon_bin)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if IS_WINDOWS:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen([sys.executable, str(daemon_bin)], creationflags=creationflags)
+        else:
+            subprocess.Popen(
+                [sys.executable, str(daemon_bin)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         for _ in range(50):
             time.sleep(0.05)
             if client.is_server_running():
                 break
 
 
-def main():
-    client = IPCClient()
-    ensure_daemon_running(client)
+def run_gtk(client: IPCClient):
+    import gi
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+    from gi.repository import Gtk, GLib
+    from pomodoro.indicator import GtkPanelAppIndicator
 
-    app_indicator = PanelAppIndicator(ipc_client=client)
+    app_indicator = GtkPanelAppIndicator(ipc_client=client)
 
-    # Subscribe to daemon push events
     def on_ipc_event(msg):
         event = msg.get("event")
         data = msg.get("data")
@@ -48,8 +56,66 @@ def main():
                 GLib.idle_add(app_indicator.popup.refresh_settings)
 
     client.subscribe(on_ipc_event)
-
     Gtk.main()
+
+
+def run_qt(client: IPCClient):
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import QTimer
+    except ImportError:
+        from PyQt5.QtWidgets import QApplication
+        from PyQt5.QtCore import QTimer
+
+    from pomodoro.qt_indicator import QtAppIndicator
+
+    app = QApplication.instance()
+    if not app:
+        app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+
+    app_indicator = QtAppIndicator(ipc_client=client)
+
+    def on_ipc_event(msg):
+        event = msg.get("event")
+        data = msg.get("data")
+        if event in ("tick", "state_change") and data:
+            QTimer.singleShot(0, lambda d=data: app_indicator.update_status(d))
+        elif event == "tasks_changed":
+            if app_indicator.popup.isVisible():
+                QTimer.singleShot(0, app_indicator.popup.refresh_tasks)
+        elif event == "settings_changed":
+            if app_indicator.popup.isVisible():
+                QTimer.singleShot(0, app_indicator.popup.refresh_settings)
+
+    client.subscribe(on_ipc_event)
+
+    try:
+        sys.exit(app.exec() if hasattr(app, "exec") else app.exec_())
+    finally:
+        INDICATOR_PID_FILE.unlink(missing_ok=True)
+
+
+def main():
+    try:
+        INDICATOR_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        INDICATOR_PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
+
+    client = IPCClient()
+    ensure_daemon_running(client)
+
+    prefer_qt = "--qt" in sys.argv or IS_WINDOWS or IS_MACOS
+    if not prefer_qt and IS_LINUX:
+        try:
+            run_gtk(client)
+            return
+        except Exception:
+            pass
+
+    # Fallback to Qt on Windows, macOS, or any Linux desktop
+    run_qt(client)
 
 
 if __name__ == "__main__":

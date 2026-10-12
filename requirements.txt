@@ -1,0 +1,4 @@
+# Pomodoro Productivity Clock
+# Core daemon and CLI require ZERO external dependencies (Python standard library only).
+# For GUI & System Tray on Windows, macOS, and any Linux desktop:
+PyQt6>=6.4.0

@@ -75,6 +75,15 @@ class TestIPC(unittest.TestCase):
 
         self.assertGreater(len(received_events), 0)
 
+    def test_tcp_client_communication(self):
+        # Explicitly test TCP client connection without socket_path
+        tcp_client = IPCClient(socket_path=Path("/nonexistent/dummy.sock"), tcp_port=self.server.tcp_port)
+        self.assertTrue(tcp_client.is_server_running())
+        resp = tcp_client.send_command("status")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["data"]["state"], "IDLE")
+
 
 if __name__ == "__main__":
     unittest.main()
+
